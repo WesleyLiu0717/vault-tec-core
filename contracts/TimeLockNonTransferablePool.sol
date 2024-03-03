@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.7;
+pragma solidity ^0.8.7;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -16,6 +16,7 @@ contract TimeLockNonTransferablePool is BasePool, ITimeLockNonTransferablePool {
     uint256 public immutable minLockDuration;
     uint256 public immutable maxLockDuration;
     uint256 public constant MIN_LOCK_DURATION_FOR_SAFETY = 10 minutes;
+    uint256 public constant forceWithdrawFeeDivider = 100; // 1%
 
     mapping(address => Deposit[]) public depositsOf;
 
@@ -99,6 +100,29 @@ contract TimeLockNonTransferablePool is BasePool, ITimeLockNonTransferablePool {
         // return tokens
         depositToken.safeTransfer(_receiver, userDeposit.amount);
         emit Withdrawn(_depositId, _receiver, _msgSender(), userDeposit.amount);
+    }
+
+    function forceWithdraw(uint256 _depositId, address _depositor) external nonReentrant {
+        Deposit memory userDeposit = depositsOf[_depositor][_depositId];
+        require(block.timestamp >= userDeposit.end, "TimeLockNonTransferablePool.withdraw: too soon");
+
+        // No risk of wrapping around on casting to uint256 since deposit end always > deposit start and types are 64 bits
+        uint256 shareAmount = (userDeposit.amount * getMultiplier(uint256(userDeposit.end - userDeposit.start))) / 1e18;
+
+        // remove Deposit
+        depositsOf[_depositor][_depositId] = depositsOf[_depositor][depositsOf[_depositor].length - 1];
+        depositsOf[_depositor].pop();
+
+        // burn pool shares
+        _burn(_depositor, shareAmount);
+
+        // calculate fee
+        uint256 fee = userDeposit.amount / forceWithdrawFeeDivider;
+
+        // return tokens
+        depositToken.safeTransfer(msg.sender, fee);
+        depositToken.safeTransfer(_depositor, userDeposit.amount - fee);
+        emit Withdrawn(_depositId, _depositor, _msgSender(), userDeposit.amount);
     }
 
     function getMultiplier(uint256 _lockDuration) public view returns (uint256) {
